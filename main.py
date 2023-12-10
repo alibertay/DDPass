@@ -8,26 +8,25 @@ import string
 import pyperclip
 
 def CreateMasterKey():
-    print("geldi1")
     conn = sqlite3.connect("DDPass.db")
     cursor = conn.cursor()
     cursor.execute("CREATE TABLE IF NOT EXISTS user_table (MASTER_KEY TEXT)")
     master_key = cursor.execute("SELECT MASTER_KEY FROM user_table").fetchone()
 
-    if master_key == None:
-
+    if master_key is None:
         fernet_master_key = Fernet.generate_key()
-        master_key = str(MakeHash(fernet_master_key)).replace("'","")
-        cursor.execute(f"INSERT INTO user_table VALUES('{master_key}')")
-        print(master_key)
+        master_key = MakeHash(fernet_master_key)  # Tırnak işaretlerini kaldırdık
+        cursor.execute(f"INSERT INTO user_table VALUES(?)", (master_key,))
+        conn.commit()
     else:
         fernet_master_key = Fernet.generate_key()
-        master_key = str(MakeHash(fernet_master_key)).replace("'","")
-        cursor.execute(f"UPDATE user_table SET MASTER_KEY = '{master_key}'")
+        master_key = MakeHash(fernet_master_key)  # Tırnak işaretlerini kaldırdık
+        cursor.execute("UPDATE user_table SET MASTER_KEY = ?", (master_key,))
+        conn.commit()
 
     conn.close()
 
-    return str(fernet_master_key)
+    return fernet_master_key.decode()  # Bayt dizisini geri çeviriyoruz ve çözüyoruz
 
 def GeneratePassword(master_key, platform, username):
     master_key = bytes(master_key)
@@ -38,7 +37,7 @@ def GeneratePassword(master_key, platform, username):
     master_key_hash_from_db = cursor.execute("SELECT MASTER_KEY FROM user_table").fetchone()
     conn.close()
 
-    if master_key_hash_from_db == None:
+    if master_key_hash_from_db is None:
         raise ValueError("There is no MasterKey for this user.")
     else:
         master_key_hash_from_db = master_key_hash_from_db[0]
@@ -68,9 +67,37 @@ def GeneratePassword(master_key, platform, username):
 
         conn = sqlite3.connect("DDPass.db")
         cursor = conn.cursor()
-        cursor.execute("CREATE TABLE IF NOT EXISTS passwords(platform TEXT, username TEXT, password TEXT)")
-        cursor.execute(f"INSERT INTO passwords VALUES('{platform}', '{username}', '{encrypted}')")
+
+        # Veritabanında şifre mevcutsa güncelle, yoksa ekle
+        existing_password = cursor.execute("SELECT password FROM passwords WHERE platform = ? AND username = ?",
+                                           (platform, username)).fetchone()
+
+        if existing_password:
+            cursor.execute("UPDATE passwords SET password = ? WHERE platform = ? AND username = ?",
+                           (encrypted, platform, username))
+        else:
+            cursor.execute("INSERT INTO passwords (platform, username, password) VALUES (?, ?, ?)",
+                           (platform, username, encrypted))
+
+        conn.commit()
         conn.close()
+
+        # Yeni pencere oluştur
+        password_window = tk.Toplevel(root)
+        password_window.title("Generated Password")
+        password_window.geometry("300x150")
+
+        tk.Label(password_window, text="Generated Password:").pack()
+        generated_password_entry = tk.Entry(password_window, font=("Helvetica", 12), show="*")
+        generated_password_entry.pack(pady=10)
+        generated_password_entry.insert(0, final_password)
+
+        def copy_generated_password():
+            pyperclip.copy(final_password)
+            messagebox.showinfo("Copied", "Generated password copied to clipboard.")
+
+        copy_button = tk.Button(password_window, text="Copy", command=copy_generated_password)
+        copy_button.pack()
 
         return final_password
 
@@ -171,9 +198,38 @@ def on_show_password():
             messagebox.showerror("Error", str(e))
 
 def on_add_new_platform():
+    def generate_and_show_password(master_key_str):
+        platform = platform_entry.get()
+        username = username_entry.get()
+
+        if platform and username:
+            try:
+                master_key = bytes(master_key_str, 'utf-8')  # String'i bayt dizisine çevirin
+                password = GeneratePassword(master_key, platform, username)
+                password_var.set(password)
+            except ValueError as e:
+                messagebox.showerror("Error", str(e))
+
+    def create_password_window():
+        platform = platform_entry.get()
+        username = username_entry.get()
+
+        if platform and username:
+            password_window = tk.Toplevel(root)
+            password_window.title("Generate Password")
+            password_window.geometry("300x150")
+
+            tk.Label(password_window, text="Enter your master key:").pack()
+            master_key_entry = tk.Entry(password_window, font=("Helvetica", 12), show="*")
+            master_key_entry.pack(pady=10)
+
+            generate_password_button = tk.Button(password_window, text="Generate Password",
+                                                 command=lambda: generate_and_show_password(master_key_entry.get()))
+            generate_password_button.pack()
+
     new_platform_window = tk.Toplevel(root)
     new_platform_window.title("Add New Platform")
-    new_platform_window.geometry("300x300")
+    new_platform_window.geometry("300x150")
 
     frame = tk.Frame(new_platform_window, padx=10, pady=10)
     frame.pack(expand=True)
@@ -186,30 +242,12 @@ def on_add_new_platform():
     username_entry = tk.Entry(frame)
     username_entry.pack()
 
-    password_entry = tk.Entry(frame, font=("Helvetica", 12), show="*")
+    create_password_button = tk.Button(frame, text="Create Password", command=create_password_window)
+    create_password_button.pack()
+
+    password_var = tk.StringVar()
+    password_entry = tk.Entry(frame, textvariable=password_var, font=("Helvetica", 12), show="*")
     password_entry.pack(pady=10)
-
-    def generate_and_show_password():
-        platform = platform_entry.get()
-        username = username_entry.get()
-        master_key = simpledialog.askstring("Master Key", "Enter your master key:", show='*')
-        if master_key:
-            try:
-                password = GeneratePassword(master_key, platform, username)
-                password_entry.delete(0, tk.END)
-                password_entry.insert(0, password)
-            except ValueError as e:
-                messagebox.showerror("Error", str(e))
-
-    generate_password_button = tk.Button(frame, text="Generate Password", command=generate_and_show_password)
-    generate_password_button.pack()
-
-    def copy_password():
-        pyperclip.copy(password_entry.get())
-        messagebox.showinfo("Copied", "Password copied to clipboard.")
-
-    copy_password_button = tk.Button(frame, text="Copy Password", command=copy_password)
-    copy_password_button.pack()
 
 root = tk.Tk()
 root.title("DDPass")
