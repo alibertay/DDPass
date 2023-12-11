@@ -1,0 +1,7 @@
+tkinter==8.6
+sqlite3==3.35.4
+cryptography==3.4.7
+hashlib==20081119
+random==1.5.0
+string==2020.7.14
+pyperclip==1.8.1
