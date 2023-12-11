@@ -7,30 +7,44 @@ import random
 import string
 import pyperclip
 
-def CreateMasterKey():
+
+def initialize_database():
     conn = sqlite3.connect("DDPass.db")
     cursor = conn.cursor()
+
+    # user_table ve passwords tablolarını oluşturma
     cursor.execute("CREATE TABLE IF NOT EXISTS user_table (MASTER_KEY TEXT)")
-    master_key = cursor.execute("SELECT MASTER_KEY FROM user_table").fetchone()
+    cursor.execute("CREATE TABLE IF NOT EXISTS passwords (platform TEXT, username TEXT, password BLOB)")
 
-    if master_key is None:
-        fernet_master_key = Fernet.generate_key()
-        master_key = MakeHash(fernet_master_key)  # Tırnak işaretlerini kaldırdık
-        cursor.execute(f"INSERT INTO user_table VALUES(?)", (master_key,))
-        conn.commit()
-    else:
-        fernet_master_key = Fernet.generate_key()
-        master_key = MakeHash(fernet_master_key)  # Tırnak işaretlerini kaldırdık
-        cursor.execute("UPDATE user_table SET MASTER_KEY = ?", (master_key,))
-        conn.commit()
-
+    conn.commit()
     conn.close()
 
-    return fernet_master_key.decode()  # Bayt dizisini geri çeviriyoruz ve çözüyoruz
+def CreateMasterKey():
+    user_response = messagebox.askyesno("Confirm", "Creating a new Master Key will delete all existing passwords. Continue?")
+    if user_response:
+        conn = sqlite3.connect("DDPass.db")
+        cursor = conn.cursor()
+
+        # Yeni master key oluştur ve hash'le
+        fernet_master_key = Fernet.generate_key()
+        hashed_master_key = MakeHash(fernet_master_key)
+
+        # user_table'daki mevcut master key'i güncelle
+        cursor.execute("UPDATE user_table SET MASTER_KEY = ?", (hashed_master_key,))
+
+        # passwords tablosundaki tüm verileri sil
+        cursor.execute("DELETE FROM passwords")
+
+        conn.commit()
+        conn.close()
+
+        return fernet_master_key.decode()  # Yeni Fernet anahtarını döndür
+    else:
+        raise ValueError("Master Key creation cancelled by user.")
+
 
 def GeneratePassword(master_key, platform, username):
-    master_key = bytes(master_key)
-    master_key_hash = MakeHash(master_key)
+    master_key_hash = MakeHash(master_key)  # Kullanıcının girdiği anahtarın hash değeri
 
     conn = sqlite3.connect("DDPass.db")
     cursor = conn.cursor()
@@ -43,7 +57,7 @@ def GeneratePassword(master_key, platform, username):
         master_key_hash_from_db = master_key_hash_from_db[0]
 
     if master_key_hash_from_db == master_key_hash:
-
+        # Parola oluşturma
         letters = string.ascii_letters
         digits = string.digits
         punctuation = string.punctuation
@@ -59,16 +73,14 @@ def GeneratePassword(master_key, platform, username):
 
         final_password = ''.join(password)
 
+        # Şifreleme
         cipher = Fernet(master_key)
-
         encrypted = cipher.encrypt(final_password.encode())
 
-        print("Şifreli Metin:", encrypted)
-
+        # Veritabanında şifre mevcutsa güncelle, yoksa ekle
         conn = sqlite3.connect("DDPass.db")
         cursor = conn.cursor()
 
-        # Veritabanında şifre mevcutsa güncelle, yoksa ekle
         existing_password = cursor.execute("SELECT password FROM passwords WHERE platform = ? AND username = ?",
                                            (platform, username)).fetchone()
 
@@ -100,7 +112,6 @@ def GeneratePassword(master_key, platform, username):
         copy_button.pack()
 
         return final_password
-
     else:
         raise ValueError("Master Key is wrong")
 
@@ -113,37 +124,20 @@ def MakeHash(password):
     return sha256_hash.hexdigest()
 
 def ShowPassword(master_key, platform, username):
-    master_key_hash = MakeHash(master_key)
-
     conn = sqlite3.connect("DDPass.db")
     cursor = conn.cursor()
-    master_key_hash_from_db = cursor.execute("SELECT MASTER_KEY FROM user_table").fetchone()
+    password = cursor.execute("SELECT password FROM passwords WHERE username = ? AND platform = ?", (username, platform)).fetchone()
     conn.close()
 
-    if master_key_hash_from_db == None:
-        raise ValueError("There is no MasterKey for this user.")
+    if password is None:
+        raise ValueError(f"There is no password for {username} on {platform}")
     else:
-        master_key_hash_from_db = master_key_hash_from_db[0]
+        password = password[0]
 
-    if master_key_hash_from_db == master_key_hash:
-        conn = sqlite3.connect("DDPass.db")
-        cursor = conn.cursor()
-        password = cursor.execute(f"SELECT password FROM passwords WHERE username = '{username}' AND platform = '{platform}'").fetchone()
-        conn.close()
+    cipher = Fernet(master_key.encode())
+    decrypted = cipher.decrypt(password).decode()
 
-        if password == None:
-            raise ValueError(f"There is no password of {username} for {platform}")
-        else:
-            password = password[0]
-
-        cipher = Fernet(master_key)
-
-        decrypted = cipher.decrypt(password).decode()
-
-        return decrypted
-
-    else:
-        raise ValueError("Master Key is wrong.")
+    return decrypted
 
 def get_platforms_and_usernames():
     conn = sqlite3.connect("DDPass.db")
@@ -193,7 +187,37 @@ def on_show_password():
     if master_key:
         try:
             password = ShowPassword(master_key, platform, username)
-            messagebox.showinfo("Password", f"The password is: {password}")
+
+            # Şifreyi gösteren yeni pencere
+            password_window = tk.Toplevel(root)
+            password_window.title("Password")
+            password_window.geometry("300x150")
+
+            # Şifre giriş alanı, başlangıçta gizli
+            password_entry = tk.Entry(password_window, font=("Helvetica", 12), show="*")
+            password_entry.pack(pady=10)
+            password_entry.insert(0, password)
+
+            def toggle_password():
+                """Şifreyi göster veya gizle"""
+                if password_entry.cget('show') == '*':
+                    password_entry.config(show='')
+                else:
+                    password_entry.config(show='*')
+
+            def copy_password():
+                """Şifreyi panoya kopyala"""
+                pyperclip.copy(password_entry.get())
+                messagebox.showinfo("Copied", "Password copied to clipboard.")
+
+            # Şifreyi göster/gizle butonu
+            toggle_button = tk.Button(password_window, text="Show/Hide", command=toggle_password)
+            toggle_button.pack()
+
+            # Şifreyi kopyala butonu
+            copy_button = tk.Button(password_window, text="Copy", command=copy_password)
+            copy_button.pack()
+
         except ValueError as e:
             messagebox.showerror("Error", str(e))
 
@@ -248,6 +272,8 @@ def on_add_new_platform():
     password_var = tk.StringVar()
     password_entry = tk.Entry(frame, textvariable=password_var, font=("Helvetica", 12), show="*")
     password_entry.pack(pady=10)
+
+initialize_database()
 
 root = tk.Tk()
 root.title("DDPass")
