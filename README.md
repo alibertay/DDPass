@@ -1,2 +1,2 @@
 # DDPass
-A password manager.
+A password manager based on Fernet cryptography.
